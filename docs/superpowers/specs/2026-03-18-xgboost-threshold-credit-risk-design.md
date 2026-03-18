@@ -2,7 +2,7 @@
 
 ## Summary
 
-Replace the current implicit Random Forest preference with an evidence-based champion selection flow that includes XGBoost as a candidate model family. The final champion must be supported by cross-validation and threshold analysis rather than hard-coded assumptions. For highly imbalanced credit-risk data, the decision threshold will be selected from probability outputs using a precision-recall curve, with a minimum precision floor of `0.60` and expected loss minimization based on `EL = PD x LGD x EAD`.
+Replace the current implicit Random Forest preference with an evidence-based champion selection flow that includes XGBoost as a candidate model family. The final champion must be supported by cross-validation and threshold analysis rather than hard-coded assumptions. For highly imbalanced credit-risk data, the decision threshold will be selected from probability outputs using portfolio expected value, while still visualizing the precision-recall trade-off for diagnostics.
 
 ## Current Context
 
@@ -16,8 +16,8 @@ Replace the current implicit Random Forest preference with an evidence-based cha
 1. Add XGBoost as a valid candidate in model selection.
 2. Declare a champion only if cross-validation and probability-threshold analysis justify it.
 3. Use `predict_proba()` outputs to tune the decision threshold instead of relying on the default `0.50`.
-4. Use a precision-recall curve because the target is imbalanced and the business objective prioritizes precision with strong recall.
-5. Minimize expected loss for approved loans using `EL = PD x LGD x EAD`.
+4. Use a precision-recall curve because the target is imbalanced, even though it will be diagnostic rather than a hard gating rule.
+5. Maximize portfolio expected value for approved loans using loan-level revenue and risk terms.
 6. Provide a reusable threshold application function for future scoring.
 
 ## Non-Goals
@@ -45,31 +45,39 @@ Replace the current implicit Random Forest preference with an evidence-based cha
 
 ### 2. Threshold Optimization Rule
 
-- Build a precision-recall curve from holdout probabilities.
-- Evaluate only thresholds whose precision is at least `0.60`.
-- Among valid thresholds, select the one with the lowest expected loss.
-- Break ties by preferring higher recall so default detection remains strong.
-- If no threshold satisfies the precision floor, report that clearly and fall back to the highest-precision threshold, using recall and expected loss as secondary decision signals.
+- Build a precision-recall curve from holdout probabilities as a diagnostic view of the trade-off between precision and recall.
+- Evaluate candidate thresholds across the holdout probabilities.
+- For each threshold, treat loans with `PD < threshold` as approved and loans with `PD >= threshold` as rejected.
+- Compute portfolio expected value for the approved set.
+- Select the threshold that maximizes total portfolio expected value.
+- Report precision, recall, approval rate, expected loss, expected interest, and expected value at the chosen threshold, but do not enforce a hard statistical floor.
 
-### 3. Expected Loss Formulation
+### 3. Expected Value Formulation
 
 - `PD`: predicted default probability from `predict_proba()`.
+- `Probability_of_Paying`: `1 - PD`.
 - `LGD`: one historical average estimated from past defaulted or charged-off training loans only.
 - `EAD`: loan exposure at approval time, using `funded_amnt` when available and `loan_amnt` as fallback.
+- `Expected_Interest_Rate`: a simple configurable business parameter applied to approved-loan exposure.
+- `Expected_Interest_i`: `EAD_i x Expected_Interest_Rate`.
 
-Expected loss for an approved loan:
+Expected loss component for an approved loan:
 
 `EL_i = PD_i x historical_avg_LGD x EAD_i`
 
-Portfolio expected loss at a threshold:
+Expected value for an approved loan:
 
-`Portfolio_EL = sum(EL_i for approved loans)`
+`EV_i = ((1 - PD_i) x Expected_Interest_i) - (PD_i x historical_avg_LGD x EAD_i)`
+
+Portfolio expected value at a threshold:
+
+`Portfolio_EV = sum(EV_i for approved loans)`
 
 ### 4. Leakage Controls
 
 - Do not use realized loss variables such as `recoveries`, `total_rec_prncp`, or other post-outcome values as model inputs.
 - These columns may be used once to estimate the historical average LGD from the training split.
-- Threshold selection must consume only predicted probabilities and approval-time exposure values.
+- Threshold selection must consume only predicted probabilities, approval-time exposure values, and the explicit expected-interest assumption.
 
 ## Implementation Plan
 
@@ -88,10 +96,10 @@ Add the following helpers to the script:
   - Compute realized loss ratios on historical defaults only.
   - Clip ratios to `[0, 1]`.
   - Return one average LGD constant.
-- `compute_expected_loss(probabilities, lgd, ead)`
-  - Return per-loan expected losses.
-- `select_threshold_from_pr_curve(y_true, probabilities, ead, precision_floor, lgd)`
-  - Evaluate candidate thresholds under the precision constraint.
+- `compute_expected_value(probabilities, lgd, ead, expected_interest_rate)`
+  - Return per-loan expected values and the embedded expected-loss term.
+- `select_threshold_by_expected_value(y_true, probabilities, ead, expected_interest_rate, lgd)`
+  - Evaluate candidate thresholds using portfolio expected value.
   - Return the selected threshold and a threshold summary table.
 - `apply_threshold(probabilities, threshold)`
   - Convert probabilities into final class labels for all future scoring.
@@ -103,7 +111,7 @@ The script should print or plot:
 - Cross-validated model leaderboard.
 - Champion declaration with supporting metrics.
 - Precision-recall curve for the final candidate.
-- Threshold summary table showing precision, recall, approval rate, and expected loss.
+- Threshold summary table showing precision, recall, approval rate, expected loss, expected interest, and expected value.
 - Chosen threshold with rationale.
 - Final metrics and confusion-matrix-style counts under the custom threshold.
 
@@ -120,8 +128,8 @@ Verification should confirm:
 1. XGBoost appears in model selection and participates in cross-validation.
 2. `predict_proba()` is used for threshold tuning.
 3. The precision-recall curve is generated for the final candidate.
-4. The threshold search enforces `precision >= 0.60`.
-5. Expected loss uses `PD x LGD x EAD`.
+4. The threshold search maximizes portfolio expected value rather than enforcing a precision floor.
+5. Expected value uses `((1 - PD) x Expected_Interest) - (PD x LGD x EAD)`.
 6. Final class labels are produced through the reusable threshold function.
 
 ## Risks And Mitigations
@@ -132,13 +140,17 @@ Verification should confirm:
   - Report threshold metrics explicitly and keep the rule transparent.
 - Historical LGD estimation may be noisy.
   - Use a clipped average from defaults only and document the assumption.
+- The selected threshold may be sensitive to the revenue assumption.
+  - Keep the expected-interest parameter explicit and report it with the chosen threshold.
 
 ## User-Approved Decisions
 
 - XGBoost is added as a candidate rather than forced as champion.
 - Champion status requires both cross-validation support and threshold analysis support.
 - Thresholding uses probability outputs from `predict_proba()`.
-- Precision-recall analysis is the main threshold selection tool.
-- The minimum precision floor is `0.60`.
-- Expected loss follows `EL = PD x LGD x EAD`.
+- Precision-recall analysis is retained as a diagnostic visualization, not a hard threshold rule.
+- There is no hard precision floor.
+- Threshold selection is driven by portfolio expected value.
+- Expected value follows `((1 - PD) x Expected_Interest) - (PD x LGD x EAD)`.
 - `LGD` is estimated as a historical average from defaulted loans.
+- A simple expected-interest parameter is part of the decision rule.
