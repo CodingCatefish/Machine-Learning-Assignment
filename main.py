@@ -110,6 +110,11 @@ def build_features(df_pd: pd.DataFrame):
     X = df_pd.drop(columns=cols_to_drop)
     y = df_pd[TARGET_COL]
 
+    empty_cols = [col for col in X.columns if X[col].isna().all()]
+    if empty_cols:
+        print(f"Dropping all-missing features: {empty_cols}")
+        X = X.drop(columns=empty_cols)
+
     cat_cols_all = X.select_dtypes(include=["object", "string"]).columns.tolist()
     safe_cat_cols = [col for col in cat_cols_all if X[col].nunique() < 50]
     unsafe_cat_cols = [col for col in cat_cols_all if col not in safe_cat_cols]
