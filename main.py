@@ -8,17 +8,102 @@ import polars as pl
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.naive_bayes import BernoulliNB
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
-from xgboost import XGBClassifier
+from xgboost import DMatrix, XGBClassifier
 
 
 RANDOM_STATE = 42
 TARGET_COL = "target"
 PRIMARY_METRIC = "ROC_AUC"
+DECISION_THRESHOLD = 0.35
+
+
+class GPUAwareXGBClassifier(XGBClassifier):
+    def _predict_via_dmatrix(
+        self,
+        X,
+        *,
+        output_margin: bool = False,
+        validate_features: bool = True,
+        base_margin=None,
+        iteration_range=None,
+    ):
+        booster = self.get_booster()
+        dmatrix = DMatrix(X, base_margin=base_margin)
+        return booster.predict(
+            dmatrix,
+            output_margin=output_margin,
+            validate_features=validate_features,
+            iteration_range=self._get_iteration_range(iteration_range),
+        )
+
+    def predict(
+        self,
+        X,
+        *,
+        output_margin: bool = False,
+        validate_features: bool = True,
+        base_margin=None,
+        iteration_range=None,
+    ):
+        if isinstance(self.device, str) and self.device.startswith("cuda"):
+            prediction = self._predict_via_dmatrix(
+                X,
+                output_margin=output_margin,
+                validate_features=validate_features,
+                base_margin=base_margin,
+                iteration_range=iteration_range,
+            )
+            if output_margin:
+                return prediction
+            if prediction.ndim == 1:
+                return (prediction >= 0.5).astype(int)
+            return np.argmax(prediction, axis=1)
+
+        return super().predict(
+            X,
+            output_margin=output_margin,
+            validate_features=validate_features,
+            base_margin=base_margin,
+            iteration_range=iteration_range,
+        )
+
+    def predict_proba(
+        self,
+        X,
+        validate_features: bool = True,
+        base_margin=None,
+        iteration_range=None,
+    ):
+        if isinstance(self.device, str) and self.device.startswith("cuda"):
+            prediction = self._predict_via_dmatrix(
+                X,
+                validate_features=validate_features,
+                base_margin=base_margin,
+                iteration_range=iteration_range,
+            )
+            if prediction.ndim == 1:
+                return np.column_stack((1.0 - prediction, prediction))
+            return prediction
+
+        return super().predict_proba(
+            X,
+            validate_features=validate_features,
+            base_margin=base_margin,
+            iteration_range=iteration_range,
+        )
 
 
 def load_dataset() -> pl.DataFrame:
@@ -178,13 +263,14 @@ def build_models(y_train: pd.Series) -> dict:
             random_state=RANDOM_STATE,
         ),
         "BernoulliNaiveBayes": BernoulliNB(),
-        "XGBoost": XGBClassifier(
+        "XGBoost": GPUAwareXGBClassifier(
             n_estimators=200,
             max_depth=6,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             tree_method="hist",
+            device="cuda",
             eval_metric="logloss",
             random_state=RANDOM_STATE,
             n_jobs=1,
@@ -203,6 +289,7 @@ def evaluate_models(models, preprocessing, X_train, y_train) -> pd.DataFrame:
         pipeline = Pipeline(
             steps=[("preprocessing", preprocessing), ("classifier", model)]
         )
+        cv_n_jobs = 1 if name == "XGBoost" else -1
 
         cv_scores = cross_validate(
             pipeline,
@@ -210,22 +297,27 @@ def evaluate_models(models, preprocessing, X_train, y_train) -> pd.DataFrame:
             y_train,
             cv=kfold,
             scoring=scoring,
-            n_jobs=-1,
+            n_jobs=cv_n_jobs,
         )
 
         results.append(
             {
                 "Model": name,
-                "ROC_AUC": cv_scores["test_roc_auc"].mean(),
-                "F1": cv_scores["test_f1"].mean(),
-                "Precision": cv_scores["test_precision"].mean(),
-                "Recall": cv_scores["test_recall"].mean(),
-                "Accuracy": cv_scores["test_accuracy"].mean(),
+                "ROC_AUC_Mean": cv_scores["test_roc_auc"].mean(),
+                "ROC_AUC_Std": cv_scores["test_roc_auc"].std(ddof=1),
+                "F1_Mean": cv_scores["test_f1"].mean(),
+                "F1_Std": cv_scores["test_f1"].std(ddof=1),
+                "Precision_Mean": cv_scores["test_precision"].mean(),
+                "Precision_Std": cv_scores["test_precision"].std(ddof=1),
+                "Recall_Mean": cv_scores["test_recall"].mean(),
+                "Recall_Std": cv_scores["test_recall"].std(ddof=1),
+                "Accuracy_Mean": cv_scores["test_accuracy"].mean(),
+                "Accuracy_Std": cv_scores["test_accuracy"].std(ddof=1),
             }
         )
 
     results_df = pd.DataFrame(results).sort_values(
-        by=PRIMARY_METRIC, ascending=False
+        by=f"{PRIMARY_METRIC}_Mean", ascending=False
     )
     return results_df
 
@@ -238,9 +330,29 @@ def fit_champion(preprocessing, model, X_train, y_train) -> Pipeline:
     return pipeline
 
 
-def show_confusion_matrix(model_name, pipeline, X_test, y_test) -> None:
-    y_pred = pipeline.predict(X_test)
+def predict_with_threshold(pipeline: Pipeline, X_test, threshold: float) -> tuple:
+    y_prob = pipeline.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= threshold).astype(int)
+    return y_prob, y_pred
+
+
+def show_final_evaluation(
+    model_name, pipeline, X_test, y_test, threshold: float
+) -> None:
+    y_prob, y_pred = predict_with_threshold(pipeline, X_test, threshold)
     cm = confusion_matrix(y_test, y_pred)
+    final_metrics = {
+        "ROC_AUC": roc_auc_score(y_test, y_prob),
+        "F1": f1_score(y_test, y_pred, zero_division=0),
+        "Precision": precision_score(y_test, y_pred, zero_division=0),
+        "Recall": recall_score(y_test, y_pred, zero_division=0),
+        "Accuracy": accuracy_score(y_test, y_pred),
+    }
+
+    print(f"\nFinal decision threshold: {threshold:.2f}")
+    print("\n=== Holdout Metrics At Selected Threshold ===")
+    for metric_name, metric_value in final_metrics.items():
+        print(f"{metric_name}: {metric_value:.4f}")
 
     print(f"\nConfusion matrix for champion model: {model_name}")
     print(cm)
@@ -282,13 +394,19 @@ def main() -> None:
 
     champion_name = results_df.iloc[0]["Model"]
     champion_model = models[champion_name]
-    print(f"\nChampion model based on {PRIMARY_METRIC}: {champion_name}")
+    print(f"\nChampion model based on {PRIMARY_METRIC} mean: {champion_name}")
 
     print("\nPart C: Holdout Evaluation")
     champion_pipeline = fit_champion(
         preprocessing, champion_model, X_train, y_train
     )
-    show_confusion_matrix(champion_name, champion_pipeline, X_test, y_test)
+    show_final_evaluation(
+        champion_name,
+        champion_pipeline,
+        X_test,
+        y_test,
+        threshold=DECISION_THRESHOLD,
+    )
 
 
 if __name__ == "__main__":
