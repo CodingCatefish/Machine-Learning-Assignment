@@ -2,7 +2,7 @@
 
 ## Summary
 
-Replace the current implicit Random Forest preference with an evidence-based champion selection flow that includes XGBoost as a candidate model family. The final champion must be supported by cross-validation and threshold analysis rather than hard-coded assumptions. For highly imbalanced credit-risk data, the decision threshold will be selected from probability outputs using portfolio expected value, while still visualizing the precision-recall trade-off for diagnostics.
+Replace the current implicit Random Forest preference with an evidence-based champion selection flow that includes XGBoost as a candidate model family. The final champion must be supported by cross-validation and threshold analysis rather than hard-coded assumptions. For highly imbalanced credit-risk data, the decision threshold will be selected from probability outputs using portfolio expected value with term-aware net profit and a minimum approval-rate floor, while still visualizing the precision-recall trade-off for diagnostics.
 
 ## Current Context
 
@@ -17,7 +17,7 @@ Replace the current implicit Random Forest preference with an evidence-based cha
 2. Declare a champion only if cross-validation and probability-threshold analysis justify it.
 3. Use `predict_proba()` outputs to tune the decision threshold instead of relying on the default `0.50`.
 4. Use a precision-recall curve because the target is imbalanced, even though it will be diagnostic rather than a hard gating rule.
-5. Maximize portfolio expected value for approved loans using loan-level revenue and risk terms.
+5. Maximize portfolio expected value for approved loans using term-aware loan-level revenue and risk terms.
 6. Provide a reusable threshold application function for future scoring.
 
 ## Non-Goals
@@ -49,8 +49,11 @@ Replace the current implicit Random Forest preference with an evidence-based cha
 - Evaluate candidate thresholds across the holdout probabilities.
 - For each threshold, treat loans with `PD < threshold` as approved and loans with `PD >= threshold` as rejected.
 - Compute portfolio expected value for the approved set.
-- Select the threshold that maximizes total portfolio expected value.
-- Report precision, recall, approval rate, expected loss, expected interest, and expected value at the chosen threshold, but do not enforce a hard statistical floor.
+- Add a business constraint: only thresholds with `Approval_Rate >= MIN_APPROVAL_RATE` are eligible for final selection.
+- Among eligible thresholds, select the threshold that maximizes total portfolio expected value.
+- Also report the unconstrained best threshold so the trade-off between pure economics and business volume is explicit.
+- If no threshold satisfies the approval floor, report that clearly and fall back to the unconstrained expected-value optimum.
+- Report precision, recall, approval rate, expected loss, expected profit, and expected value at the chosen threshold.
 
 ### 3. Expected Value Formulation
 
@@ -58,8 +61,11 @@ Replace the current implicit Random Forest preference with an evidence-based cha
 - `Probability_of_Paying`: `1 - PD`.
 - `LGD`: one historical average estimated from past defaulted or charged-off training loans only.
 - `EAD`: loan exposure at approval time, using `funded_amnt` when available and `loan_amnt` as fallback.
-- `Expected_Interest_Rate`: a simple configurable business parameter applied to approved-loan exposure.
-- `Expected_Interest_i`: `EAD_i x Expected_Interest_Rate`.
+- `Term_Months`: parsed from the original `term` column before feature dropping.
+- `Term_Years`: `Term_Months / 12`.
+- `Net_Rate`: `int_rate - funding_cost_rate - servicing_cost_rate`.
+- `Balance_Factor`: a simple amortization proxy to avoid treating the full exposure as outstanding for the full term.
+- `Expected_Profit_i`: `EAD_i x Net_Rate_i x Term_Years_i x Balance_Factor`.
 
 Expected loss component for an approved loan:
 
@@ -67,7 +73,7 @@ Expected loss component for an approved loan:
 
 Expected value for an approved loan:
 
-`EV_i = ((1 - PD_i) x Expected_Interest_i) - (PD_i x historical_avg_LGD x EAD_i)`
+`EV_i = ((1 - PD_i) x Expected_Profit_i) - (PD_i x historical_avg_LGD x EAD_i)`
 
 Portfolio expected value at a threshold:
 
@@ -77,7 +83,7 @@ Portfolio expected value at a threshold:
 
 - Do not use realized loss variables such as `recoveries`, `total_rec_prncp`, or other post-outcome values as model inputs.
 - These columns may be used once to estimate the historical average LGD from the training split.
-- Threshold selection must consume only predicted probabilities, approval-time exposure values, and the explicit expected-interest assumption.
+- Threshold selection must consume only predicted probabilities, approval-time exposure values, parsed term values, contract interest rates, and explicit business-cost assumptions available at approval time.
 
 ## Implementation Plan
 
@@ -96,11 +102,13 @@ Add the following helpers to the script:
   - Compute realized loss ratios on historical defaults only.
   - Clip ratios to `[0, 1]`.
   - Return one average LGD constant.
-- `compute_expected_value(probabilities, lgd, ead, expected_interest_rate)`
-  - Return per-loan expected values and the embedded expected-loss term.
-- `select_threshold_by_expected_value(y_true, probabilities, ead, expected_interest_rate, lgd)`
-  - Evaluate candidate thresholds using portfolio expected value.
-  - Return the selected threshold and a threshold summary table.
+- `resolve_term_years(...)`
+  - Parse loan term into years with a fallback when parsing fails.
+- `compute_expected_value(probabilities, lgd, ead, interest_rates, term_months, funding_cost_rate, servicing_cost_rate, balance_factor)`
+  - Return per-loan expected profit, expected loss, and expected value.
+- `select_threshold_by_expected_value(y_true, probabilities, ead, interest_rates, term_months, lgd, min_approval_rate, ...)`
+  - Evaluate candidate thresholds using portfolio expected value under the approval-rate constraint.
+  - Return the constrained selected threshold, the unconstrained best threshold, and a threshold summary table.
 - `apply_threshold(probabilities, threshold)`
   - Convert probabilities into final class labels for all future scoring.
 
@@ -111,8 +119,9 @@ The script should print or plot:
 - Cross-validated model leaderboard.
 - Champion declaration with supporting metrics.
 - Precision-recall curve for the final candidate.
-- Threshold summary table showing precision, recall, approval rate, expected loss, expected interest, and expected value.
-- Chosen threshold with rationale.
+- Threshold summary table showing precision, recall, approval rate, expected profit, expected loss, and expected value.
+- Business assumptions used in the net-profit calculation.
+- Unconstrained best threshold and constrained chosen threshold with rationale.
 - Final metrics and confusion-matrix-style counts under the custom threshold.
 
 ### Ablation Handling
@@ -128,8 +137,8 @@ Verification should confirm:
 1. XGBoost appears in model selection and participates in cross-validation.
 2. `predict_proba()` is used for threshold tuning.
 3. The precision-recall curve is generated for the final candidate.
-4. The threshold search maximizes portfolio expected value rather than enforcing a precision floor.
-5. Expected value uses `((1 - PD) x Expected_Interest) - (PD x LGD x EAD)`.
+4. The threshold search maximizes portfolio expected value subject to the minimum approval-rate floor.
+5. Expected value uses a term-aware profit model and `PD x LGD x EAD` for expected loss.
 6. Final class labels are produced through the reusable threshold function.
 
 ## Risks And Mitigations
@@ -140,8 +149,10 @@ Verification should confirm:
   - Report threshold metrics explicitly and keep the rule transparent.
 - Historical LGD estimation may be noisy.
   - Use a clipped average from defaults only and document the assumption.
-- The selected threshold may be sensitive to the revenue assumption.
-  - Keep the expected-interest parameter explicit and report it with the chosen threshold.
+- The selected threshold may be sensitive to business assumptions such as funding cost, servicing cost, amortization proxy, and approval floor.
+  - Keep those assumptions explicit and report them with the chosen threshold.
+- The approval floor may force a lower-value operating point than the unconstrained optimum.
+  - Report both constrained and unconstrained thresholds so the trade-off is visible.
 
 ## User-Approved Decisions
 
@@ -150,7 +161,8 @@ Verification should confirm:
 - Thresholding uses probability outputs from `predict_proba()`.
 - Precision-recall analysis is retained as a diagnostic visualization, not a hard threshold rule.
 - There is no hard precision floor.
-- Threshold selection is driven by portfolio expected value.
-- Expected value follows `((1 - PD) x Expected_Interest) - (PD x LGD x EAD)`.
+- Threshold selection is driven by portfolio expected value under a minimum approval-rate floor.
+- Expected value follows `((1 - PD) x Expected_Profit) - (PD x LGD x EAD)`.
 - `LGD` is estimated as a historical average from defaulted loans.
-- A simple expected-interest parameter is part of the decision rule.
+- Revenue is term-aware and uses contract interest net of configurable business costs.
+- The final threshold should remain business-usable rather than collapse approval volume to near zero.
