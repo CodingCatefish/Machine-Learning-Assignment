@@ -1,0 +1,24 @@
+# Core scientific computing and data manipulation
+numpy>=1.21.0
+pandas>=1.5.0
+polars>=0.20.0
+
+# Machine learning and preprocessing
+scikit-learn>=1.3.0
+imbalanced-learn>=0.11.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+
+# Data visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Progress bars and utilities
+tqdm>=4.64.0
+
+# Data acquisition
+kagglehub>=0.1.0
+
+# Optional: Jupyter notebook support (if needed for development)
+# jupyter>=1.0.0
+# ipykernel>=6.0.0
