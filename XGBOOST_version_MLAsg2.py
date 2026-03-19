@@ -174,56 +174,6 @@ print("Data Prep and Pipeline Engineering is complete. Ready for handoff.")
 # This section is used to generate visuals for Data Preparation and Pipeline Engineering phase.
 print("--- Generating Visuals for Data Preparation and Pipeline Engineering phase ---")
 
-
-
-
-'''
-# Generating a "Before and After" diagram, showing the sheer volume of the original training data side-by-side with the artificially balanced data that the pipeline has created.
-# Show :
-# 1. Extreme imbalance.
-# 2. RandomUnderSampler chopped the massive 'Fully Paid' class down to 80,000.
-# 3. SMOTE-NC synthetically raises the minority class to match it, creating a balanced dataset for the models to learn from.
-
-# BEFORE: Original Training Data Distribution
-before_counts = y_train.value_counts().rename(index={0: "Fully Paid (0)", 1: "Default (1)"})
-
-# MIDDLE: After Imputation & Undersampling
-# Clone the preprocessing objects so the visualization does not mutate the training pipeline.
-imputer_viz = clone(imputer_step)
-undersampler_viz = clone(undersampler)
-smote_viz = clone(smote_nc)
-
-X_train_imputed = imputer_viz.fit_transform(X_train)
-X_train_under, y_train_under = undersampler_viz.fit_resample(X_train_imputed, y_train)
-middle_counts = pd.Series(y_train_under).value_counts().rename(index={0: "Fully Paid (0)", 1: "Default (1)"})
-
-# AFTER: After SMOTE-NC Oversampling
-X_train_smote, y_train_smote = smote_viz.fit_resample(X_train_under, y_train_under)
-after_counts = pd.Series(y_train_smote).value_counts().rename(index={0: "Fully Paid (0)", 1: "Default (1)"})
-
-# --- Plotting the Diagram for the Slide ---
-fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
-
-# Plot 1: Original Imbalance
-sns.barplot(x=before_counts.index, y=before_counts.values, ax=axes[0], palette=["#1f77b4", "#ff7f0e"])
-axes[0].set_title(f"1. Original Data\nTotal Rows: {len(y_train):,}")
-axes[0].bar_label(axes[0].containers[0], fmt='%d')
-
-# Plot 2: After Undersampling
-sns.barplot(x=middle_counts.index, y=middle_counts.values, ax=axes[1], palette=["#1f77b4", "#ff7f0e"])
-axes[1].set_title(f"2. After Undersampling\nTotal Rows: {len(y_train_under):,}")
-axes[1].bar_label(axes[1].containers[0], fmt='%d')
-
-# Plot 3: After SMOTE-NC
-sns.barplot(x=after_counts.index, y=after_counts.values, ax=axes[2], palette=["#1f77b4", "#ff7f0e"])
-axes[2].set_title(f"3. After SMOTE-NC\nTotal Rows: {len(y_train_smote):,}")
-axes[2].bar_label(axes[2].containers[0], fmt='%d')
-
-plt.tight_layout()
-plt.show()
-'''
-
-
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -328,16 +278,6 @@ for name, model in tqdm(models.items(), desc="Training Models", ncols=80):
 results_df = pd.DataFrame(results).sort_values(by="ROC_AUC", ascending=False)
 
 print(results_df)
-
-# # 5. Bar Chart
-# results_df.set_index("Model")[["ROC_AUC","F1"]].plot(kind="bar")
-# plt.title("Model Comparison")
-# plt.ylabel("Score")
-# plt.show()
-
-# --- Previous Random Forest version commented out for reference ---
-# This file now uses XGBoost as the primary model instead of Random Forest
-# Total Takes about 20 minutes to execute. I fucking hate shift-enter :)
 
 """### Justin ー Ablation & Tuning"""
 
