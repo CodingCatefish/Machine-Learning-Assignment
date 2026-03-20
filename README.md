@@ -13,7 +13,7 @@
 
 | Team Member | Role | Responsibilities |
 |-------------|------|------------------|
-| **YX** | Data Preparation & Pipeline Engineering | Robust scaling, encoding, missing value handling, data leakage prevention |
+| **Yi Xuan** | Data Preparation & Pipeline Engineering | Robust scaling, encoding, missing value handling, data leakage prevention |
 | **Lionel** | Champion Model Selection | Cross-validation comparison of 2-3 algorithmic families |
 | **Justin** | Ablations & Tuning | 4 controlled experiments on champion model with detailed logging |
 | **Ezra** | Mechanical Failure Analysis | Row-level error inspection and technical fix proposals |
