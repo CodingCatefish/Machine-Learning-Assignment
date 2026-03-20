@@ -18,7 +18,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
 from sklearn.compose import ColumnTransformer
 from imblearn.pipeline import Pipeline as ImbPipeline
-from sklearn.metrics import precision_recall_curve, confusion_matrix, classification_report
+from sklearn.metrics import precision_recall_curve, confusion_matrix, classification_report, roc_auc_score, f1_score, precision_score, recall_score, accuracy_score
 
 # Model Selection Phase - Lionel
 from sklearn.model_selection import StratifiedKFold, cross_validate
@@ -301,43 +301,48 @@ lgbm_baseline_params = {
     "verbose": -1
 }
 
-# Four experiments; each changes only one parameter from the baseline
+# Four controlled experiments based on Optuna optimization
 ablation_experiments = [
     {
-        "Experiment": "E1_n_estimators_200",
-        "Changed_Parameter": "n_estimators",
-        "Old_Value": 100,
-        "New_Value": 200,
-        "Params": {**lgbm_baseline_params, "n_estimators": 200}
-    },
-    {
-        "Experiment": "E2_num_leaves_63",
+        "Experiment": "E1_num_leaves_49",
+        "Hypothesis": "Increasing leaves captures more complex non-linear relationships, improving F1.",
         "Changed_Parameter": "num_leaves",
         "Old_Value": 31,
-        "New_Value": 63,
-        "Params": {**lgbm_baseline_params, "num_leaves": 63}
+        "New_Value": 49,
+        "Params": {**lgbm_baseline_params, "num_leaves": 49}
     },
     {
-        "Experiment": "E3_learning_rate_0.05",
+        "Experiment": "E2_learning_rate_0.058",
+        "Hypothesis": "A slower learning rate helps gradient boosting converge to a better global minimum.",
         "Changed_Parameter": "learning_rate",
         "Old_Value": 0.1,
-        "New_Value": 0.05,
-        "Params": {**lgbm_baseline_params, "learning_rate": 0.05}
+        "New_Value": 0.058,
+        "Params": {**lgbm_baseline_params, "learning_rate": 0.058}
     },
     {
-        "Experiment": "E4_subsample_0.9",
-        "Changed_Parameter": "subsample",
-        "Old_Value": 0.8,
-        "New_Value": 0.9,
-        "Params": {**lgbm_baseline_params, "subsample": 0.9}
+        "Experiment": "E3_min_child_samples_33",
+        "Hypothesis": "Higher minimum data per leaf prevents overfitting to outlier loans.",
+        "Changed_Parameter": "min_child_samples",
+        "Old_Value": 20, # LightGBM default
+        "New_Value": 33,
+        "Params": {**lgbm_baseline_params, "min_child_samples": 33}
+    },
+    {
+        "Experiment": "E4_scale_pos_weight_4.04",
+        "Hypothesis": "Slightly lowering the class weight penalty will balance Precision/Recall better.",
+        "Changed_Parameter": "scale_pos_weight",
+        "Old_Value": round(scale_pos_weight, 2),
+        "New_Value": 4.04,
+        "Params": {**lgbm_baseline_params, "scale_pos_weight": 4.04}
     }
 ]
 
 ablation_results = []
 
-def build_cv_row(experiment_name, changed_param, old_value, new_value, cv_scores, elapsed):
+def build_cv_row(experiment_name, hypothesis, changed_param, old_value, new_value, cv_scores, elapsed):
     return {
         "Experiment": experiment_name,
+        "Hypothesis": hypothesis,
         "Changed_Parameter": changed_param,
         "Old_Value": old_value,
         "New_Value": new_value,
@@ -346,18 +351,7 @@ def build_cv_row(experiment_name, changed_param, old_value, new_value, cv_scores
         "ROC_AUC_STD": cv_scores["test_roc_auc"].std(ddof=1),
 
         "F1": cv_scores["test_f1"].mean(),
-        "F1_STD": cv_scores["test_f1"].std(ddof=1),
-
-        "Precision": cv_scores["test_precision"].mean(),
-        "Precision_STD": cv_scores["test_precision"].std(ddof=1),
-
-        "Recall": cv_scores["test_recall"].mean(),
-        "Recall_STD": cv_scores["test_recall"].std(ddof=1),
-
-        "Accuracy": cv_scores["test_accuracy"].mean(),
-        "Accuracy_STD": cv_scores["test_accuracy"].std(ddof=1),
-
-        "Runtime_sec": elapsed
+        "F1_STD": cv_scores["test_f1"].std(ddof=1)
     }
 
 # Run baseline first
@@ -382,6 +376,7 @@ baseline_elapsed = time.time() - baseline_start
 
 baseline_result = build_cv_row(
     experiment_name="Baseline",
+    hypothesis="Baseline model with default/initial settings.",
     changed_param="None",
     old_value="-",
     new_value="-",
@@ -414,6 +409,7 @@ for exp in ablation_experiments:
     ablation_results.append(
         build_cv_row(
             experiment_name=exp["Experiment"],
+            hypothesis=exp["Hypothesis"],
             changed_param=exp["Changed_Parameter"],
             old_value=exp["Old_Value"],
             new_value=exp["New_Value"],
@@ -425,22 +421,31 @@ for exp in ablation_experiments:
 # Build ablation log
 ablation_log_df = pd.DataFrame(ablation_results)
 
-# Add deltas against baseline (means only)
-baseline_row = ablation_log_df.iloc[0]
-for metric in ["ROC_AUC", "F1", "Precision", "Recall", "Accuracy"]:
-    ablation_log_df[f"Delta_{metric}"] = ablation_log_df[metric] - baseline_row[metric]
+# Add Metric Impact string formatted as Mean ± Std Dev
+ablation_log_df["CV_F1_Impact (Mean ± Std)"] = (
+    ablation_log_df["F1"].map(lambda x: f"{x:.4f}") +
+    " ± " +
+    ablation_log_df["F1_STD"].map(lambda x: f"{x:.4f}")
+)
 
-# Sort experiments by ROC_AUC mean for quick comparison
-ablation_sorted_df = ablation_log_df.sort_values(by="ROC_AUC", ascending=False)
+# We will print a customized dataframe to exactly match the required format for the rubric
+final_rubric_table = ablation_log_df[[
+    "Experiment", 
+    "Hypothesis", 
+    "Changed_Parameter", 
+    "Old_Value", 
+    "New_Value",
+    "CV_F1_Impact (Mean ± Std)"
+]]
+
+# Sort experiments by F1 mean for quick comparison
+ablation_sorted_df = ablation_log_df.sort_values(by="F1", ascending=False)
 
 print("\n" + "="*150)
 print("PART C: ABLATION & TUNING - LightGBM Hyperparameter Experiments")
 print("="*150)
 print("\n=== LightGBM Ablation Log ===")
-print(ablation_log_df.to_string(index=False))
-
-print("\n=== Ranked by ROC_AUC ===")
-print(ablation_sorted_df.to_string(index=False))
+print(final_rubric_table.to_string(index=False))
 
 # Parameter selection.
 best_row = ablation_sorted_df.iloc[0]
@@ -455,7 +460,7 @@ else:
     )
 
 print(f"\n✓ Best Ablation Experiment: {best_experiment_name}")
-print(f"  Improvement in ROC_AUC: +{best_row['Delta_ROC_AUC']*100:.3f}%")
+print(f"  Best F1 Score: {best_row['F1']:.4f}")
 
 # Cross validation with selected parameter.
 final_model = LGBMClassifier(**final_model_params)
