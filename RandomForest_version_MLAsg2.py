@@ -37,7 +37,7 @@ from tqdm import tqdm
 
 df = pl.read_csv("loan.csv")
 
-print(df)
+print(f"Data loaded: shape={df.shape}")
 
 """###Yixuan - Data Preperation"""
 
@@ -505,14 +505,14 @@ final_stability_metrics_df = pd.DataFrame({
     ]
 })
 
-final_stability_metrics_df["Mean ± Std"] = (
+final_stability_metrics_df["Mean +/- Std"] = (
     final_stability_metrics_df["CV Mean"].map(lambda x: f"{x:.4f}") +
-    " ± " +
+    " +/- " +
     final_stability_metrics_df["CV Std Dev"].map(lambda x: f"{x:.4f}")
 )
 
-print("\n=== Final Model Stability Metrics (Cross-validation Mean ± Std Deviation) ===")
-print(final_stability_metrics_df[["Metric", "Mean ± Std"]].to_string(index=False))
+print("\n=== Final Model Stability Metrics (Cross-validation Mean +/- Std Deviation) ===")
+print(final_stability_metrics_df[["Metric", "Mean +/- Std"]].to_string(index=False))
 
 """Not enough resources lol...
 
@@ -531,14 +531,9 @@ Notes:
 #### Retrain Champion (Random Forest Classifier) Model using 'E4_min_samples_leaf_2' parameters
 """
 
-rf_e4 = RandomForestClassifier(
-    n_estimators=100,
-    max_depth=None,
-    min_samples_split=2,
-    min_samples_leaf=2,   # E4 experiment change
-    random_state=42,
-    n_jobs=-1
-)
+rf_final_params = final_model_params.copy()
+rf_final_params["n_jobs"] = -1
+rf_e4 = RandomForestClassifier(**rf_final_params)
 
 pipeline_e4 = ImbPipeline(
     steps=core_preprocessing_pipeline.steps + [("classifier", rf_e4)]

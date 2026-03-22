@@ -37,7 +37,7 @@ from tqdm import tqdm
 
 df = pl.read_csv("loan.csv")
 
-print(df)
+print(f"Data loaded: shape={df.shape}")
 
 """###Yixuan - Data Preperation"""
 
@@ -459,7 +459,7 @@ else:
         if exp["Experiment"] == best_experiment_name
     )
 
-print(f"\n✓ Best Ablation Experiment: {best_experiment_name}")
+print(f"\nBest Ablation Experiment: {best_experiment_name}")
 print(f"  Improvement in ROC_AUC: +{best_row['Delta_ROC_AUC']*100:.3f}%")
 
 # Cross validation with selected parameter.
@@ -497,14 +497,14 @@ final_stability_metrics_df = pd.DataFrame({
     ]
 })
 
-final_stability_metrics_df["Mean ± Std"] = (
+final_stability_metrics_df["Mean +/- Std"] = (
     final_stability_metrics_df["CV Mean"].map(lambda x: f"{x:.4f}") +
-    " ± " +
+    " +/- " +
     final_stability_metrics_df["CV Std Dev"].map(lambda x: f"{x:.4f}")
 )
 
-print("\n=== Final Model Stability Metrics (Cross-validation Mean ± Std Deviation) ===")
-print(final_stability_metrics_df[["Metric", "Mean ± Std"]].to_string(index=False))
+print("\n=== Final Model Stability Metrics (Cross-validation Mean +/- Std Deviation) ===")
+print(final_stability_metrics_df[["Metric", "Mean +/- Std"]].to_string(index=False))
 
 """Not enough resources lol...
 
@@ -523,16 +523,8 @@ Notes:
 #### Retrain Champion (XGBoost Classifier) Model using best ablation parameters
 """
 
-xgb_e4 = XGBClassifier(
-    n_estimators=100,
-    max_depth=6,
-    learning_rate=0.1,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    scale_pos_weight=scale_pos_weight,  # ← IMPROVED: Handle class imbalance
-    random_state=42,
-    n_jobs=1
-)
+xgb_final_params = final_model_params.copy()
+xgb_e4 = XGBClassifier(**xgb_final_params)
 
 pipeline_e4 = ImbPipeline(
     steps=core_preprocessing_pipeline.steps + [("classifier", xgb_e4)]

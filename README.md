@@ -41,18 +41,20 @@ Raw Data → Imputation → Encoding/Scaling → Classifier → Predictions
 ## 🏆 Model Selection & Results
 
 ### Champion Model: LightGBM
-**Selection Criteria:** Highest ROC-AUC (0.7132) with superior recall performance
+**Selection Criteria:** Highest cross-validation ROC-AUC during Part B model selection
 
-| Model | ROC-AUC | Recall@0.4 | False Positives | Training Time |
-|-------|---------|------------|-----------------|---------------|
-| **LightGBM** | **0.7132** | **81.52%** | 21,835 | ~8 seconds |
-| XGBoost | 0.7120 | 81.55% | 22,071 | ~13 seconds |
-| Random Forest | 0.6954 | 65.2% | 12,537 | ~55 seconds |
+| Model | CV ROC-AUC | CV Recall (threshold=0.5) | Training Time |
+|-------|------------|---------------------------|---------------|
+| **LightGBM** | **0.7130** | **66.22%** | ~7 seconds |
+| XGBoost | 0.7120 | 65.10% | ~12 seconds |
+| Random Forest | 0.6891 | 37.89% | ~98 seconds |
+
+**Important:** The table above is from 5-fold cross-validation during model selection. Threshold-specific business metrics for the final tuned LightGBM model are reported later in the README and are not directly comparable to these CV values.
 
 ### Business Achievement
-✅ **Exceeds 70% recall target** - Catches 81.5% of actual defaults  
-✅ **Identifies 7,576 out of 9,293 defaults** (1,930 more than Random Forest)  
-✅ **Accepts 21,835 false positives** (rejected good borrowers)
+✅ **Exceeds 70% recall target** - Catches 79.13% of actual defaults on the holdout set at threshold `0.4`  
+✅ **Identifies 7,354 out of 9,293 defaults**  
+✅ **Accepts 20,477 false positives** (rejected good borrowers)
 
 ## 🔬 Ablation & Tuning Strategy
 
@@ -67,7 +69,7 @@ From this constrained search, we isolated the four most theoretically impactful 
 3. **`min_child_samples` (Leaf-level Regularization):** *Hypothesis* - Increasing the minimum data per leaf from 20 to 33 prevents the model from overfitting to outlier borrower profiles.
 4. **`scale_pos_weight` (Cost-Sensitive Penalty):** *Hypothesis* - Slightly lowering the penalty for the minority class finds a better optimal balance between Precision and Recall.
 
-**Final Configuration:** The `num_leaves=49` configuration was adopted as the final model due to its slight edge in F1-score performance, successfully proving LightGBM's robust out-of-the-box structural performance.
+**Final Configuration:** The `scale_pos_weight=4.04` configuration was adopted as the final model because it delivered the best cross-validation F1-score in the ablation study.
 
 ## 🔍 Mechanical Failure Analysis
 
@@ -101,20 +103,20 @@ From this constrained search, we isolated the four most theoretically impactful 
 **Justification:**
 1. **Asymmetric Costs:** Missing a default costs ~4.5× more than rejecting a good borrower
 2. **Business Goal:** "Minimize loss by catching people who will default"
-3. **Impact:** 81.5% recall vs. 50% at default threshold = 62% more defaults caught
+3. **Impact:** On the final tuned LightGBM model, threshold `0.4` achieved 79.13% recall on the holdout set while keeping false positives at 20,477.
 
 ## 📊 Key Performance Metrics
 
 ### Final Model Stability (Cross-Validation)
-- **ROC-AUC:** 0.7132 ± 0.0041
-- **F1-Score:** 0.4104 ± 0.0019
-- **Recall:** 0.6496 ± 0.0020
-- **Precision:** 0.2999 ± 0.0020
+- **ROC-AUC:** 0.7127 ± 0.0040
+- **F1-Score:** 0.4105 ± 0.0022
+- **Recall:** 0.6159 ± 0.0031
+- **Precision:** 0.3078 ± 0.0023
 
 ### Confusion Matrix at Business Threshold (0.4)
 ```
-True Negatives: 19,710  |  False Positives: 21,835
-False Negatives: 1,717   |  True Positives: 7,576
+True Negatives: 21,068  |  False Positives: 20,477
+False Negatives: 1,939   |  True Positives: 7,354
 ```
 
 ## 🚀 Getting Started
@@ -129,6 +131,7 @@ pip install -r requirements.txt
 - scikit-learn>=1.3.0
 - pandas>=2.0.0
 - polars>=0.20.0
+- pyarrow>=15.0.0
 - imbalanced-learn>=0.11.0
 
 ### Usage
@@ -137,7 +140,7 @@ pip install -r requirements.txt
 python LGBM_version_MLAsg2.py
 
 # Or run individual components
-python machine_learning_assignment_2.py  # Random Forest version
+python RandomForest_version_MLAsg2.py    # Random Forest version
 python XGBOOST_version_MLAsg2.py         # XGBoost version
 ```
 
@@ -151,7 +154,7 @@ python XGBOOST_version_MLAsg2.py         # XGBoost version
 ## 📁 Project Structure
 ```
 ├── LGBM_version_MLAsg2.py          # Champion LightGBM implementation
-├── machine_learning_assignment_2.py # Random Forest baseline
+├── RandomForest_version_MLAsg2.py  # Random Forest baseline
 ├── XGBOOST_version_MLAsg2.py       # XGBoost alternative
 ├── loan.csv                        # Dataset (887K+ loan records)
 ├── requirements.txt                # Python dependencies
@@ -171,17 +174,12 @@ python XGBOOST_version_MLAsg2.py         # XGBoost version
 
 ## 📈 Business Impact
 
-**Before (Random Forest at default threshold):**
-- Catches 5,648 defaults (61% of total)
-- Rejects 12,537 good borrowers
-- **35% of defaults missed** = High financial risk
+**Final tuned LightGBM at threshold 0.4:**
+- Catches 7,354 defaults (79.13% of total)
+- Rejects 20,477 good borrowers
+- Misses 1,939 defaults (20.87% of total)
 
-**After (LightGBM at optimized threshold):**
-- Catches 7,576 defaults (81.5% of total)
-- Rejects 21,835 good borrowers
-- **18.5% of defaults missed** = Significantly reduced risk
-
-**ROI Impact:** Prevents ~$38.6M in potential losses (1,930 additional defaults caught × $20K average loan)
+**Operational takeaway:** The tuned LightGBM model clears the 70% recall target and gives a documented trade-off between missed defaults and rejected good borrowers.
 
 ## 🤝 Individual Contributions
 
