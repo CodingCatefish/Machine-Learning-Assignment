@@ -421,10 +421,10 @@ for exp in ablation_experiments:
 # Build ablation log
 ablation_log_df = pd.DataFrame(ablation_results)
 
-# Add Metric Impact string formatted as Mean ± Std Dev
-ablation_log_df["CV_F1_Impact (Mean ± Std)"] = (
+# Add Metric Impact string formatted as Mean +/- Std Dev
+ablation_log_df["CV_F1_Impact (Mean +/- Std)"] = (
     ablation_log_df["F1"].map(lambda x: f"{x:.4f}") +
-    " ± " +
+    " +/- " +
     ablation_log_df["F1_STD"].map(lambda x: f"{x:.4f}")
 )
 
@@ -435,7 +435,7 @@ final_rubric_table = ablation_log_df[[
     "Changed_Parameter", 
     "Old_Value", 
     "New_Value",
-    "CV_F1_Impact (Mean ± Std)"
+    "CV_F1_Impact (Mean +/- Std)"
 ]]
 
 # Sort experiments by F1 mean for quick comparison
@@ -459,7 +459,7 @@ else:
         if exp["Experiment"] == best_experiment_name
     )
 
-print(f"\n✓ Best Ablation Experiment: {best_experiment_name}")
+print(f"\nBest Ablation Experiment: {best_experiment_name}")
 print(f"  Best F1 Score: {best_row['F1']:.4f}")
 
 # Cross validation with selected parameter.
@@ -495,14 +495,14 @@ final_stability_metrics_df = pd.DataFrame({
     ]
 })
 
-final_stability_metrics_df["Mean ± Std"] = (
+final_stability_metrics_df["Mean +/- Std"] = (
     final_stability_metrics_df["CV Mean"].map(lambda x: f"{x:.4f}") +
-    " ± " +
+    " +/- " +
     final_stability_metrics_df["CV Std Dev"].map(lambda x: f"{x:.4f}")
 )
 
-print("\n=== Final Model Stability Metrics (Cross-validation Mean ± Std Deviation) ===")
-print(final_stability_metrics_df[["Metric", "Mean ± Std"]].to_string(index=False))
+print("\n=== Final Model Stability Metrics (Cross-validation Mean +/- Std Deviation) ===")
+print(final_stability_metrics_df[["Metric", "Mean +/- Std"]].to_string(index=False))
 
 """Not enough resources lol...
 
@@ -522,18 +522,9 @@ Notes:
 #### Retrain Champion (LightGBM Classifier) Model using best ablation parameters
 """
 
-lgbm_final = LGBMClassifier(
-    n_estimators=final_model_params.get("n_estimators", 100),
-    num_leaves=final_model_params.get("num_leaves", 31),
-    max_depth=final_model_params.get("max_depth", 7),
-    learning_rate=final_model_params.get("learning_rate", 0.1),
-    subsample=final_model_params.get("subsample", 0.8),
-    colsample_bytree=final_model_params.get("colsample_bytree", 0.8),
-    scale_pos_weight=scale_pos_weight,  # ← IMPROVED: Handle class imbalance
-    random_state=42,
-    n_jobs=-1,
-    verbose=-1
-)
+lgbm_final_params = final_model_params.copy()
+lgbm_final_params["n_jobs"] = -1
+lgbm_final = LGBMClassifier(**lgbm_final_params)
 
 pipeline_final = ImbPipeline(
     steps=core_preprocessing_pipeline.steps + [("classifier", lgbm_final)]
