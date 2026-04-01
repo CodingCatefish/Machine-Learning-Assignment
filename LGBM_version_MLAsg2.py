@@ -5,14 +5,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
-import copy
 import time
 import warnings
 warnings.filterwarnings('ignore')  # Suppress LightGBM and sklearn warnings for cleaner output
 
 # Imports for Part 2
 
-# Data Prep Phase - YX
+# Data Prep Phase - Yixuan
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
@@ -32,23 +31,14 @@ from tqdm import tqdm
 # Ablations and tuning phase - Justin
 
 # Mechanical failure analysis - Ezra
+from sklearn.model_selection import cross_val_predict
+from sklearn.calibration import CalibrationDisplay
 
 # Decision Making and consolidation - Jing Hai
 
 df = pl.read_csv("loan.csv")
 
 print(f"Data loaded: shape={df.shape}")
-
-# Yixuan - Data Preperation
-import polars as pl
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, RobustScaler
-from sklearn.compose import ColumnTransformer
-from imblearn.pipeline import Pipeline as ImbPipeline
-from sklearn.metrics import precision_recall_curve
 
 print("Part A: Data Prep & Pipeline Engineering")
 
@@ -173,13 +163,6 @@ print("Data Prep and Pipeline Engineering is complete. Ready for handoff.")
 # This section is used to generate visuals for Data Preparation and Pipeline Engineering phase.
 print("--- Generating Visuals for Data Preparation and Pipeline Engineering phase ---")
 
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-
-# This section is used to generate visuals for Data Preparation and Pipeline Engineering phase.
-print("--- Generating Visuals for Data Preparation and Pipeline Engineering phase ---")
 
 # IMPROVED: Show original class distribution
 # Using class_weight='balanced' in the classifier handles the imbalance without distorting training data
@@ -504,23 +487,110 @@ final_stability_metrics_df["Mean +/- Std"] = (
 print("\n=== Final Model Stability Metrics (Cross-validation Mean +/- Std Deviation) ===")
 print(final_stability_metrics_df[["Metric", "Mean +/- Std"]].to_string(index=False))
 
-"""Not enough resources lol...
+"""### Ezra ー Mechanical Failure Analysis"""
 
-### Ezra ー Mechanical Failure Analysis
+print("\n" + "="*150)
+print("PART D: MECHANICAL FAILURE ANALYSIS - LightGBM Champion Model")
+print("="*150)
 
-Notes:
-- LightGBM is a gradient boosting model that:
-  - Handles complex feature interactions well
-  - Trains faster than traditional Random Forests
-  - Often achieves better performance on tabular data
-  - Uses leaf-wise tree growth for optimal splits
+# Get Out-Of-Fold predictions using the best params from ablation
+# Use the same kfold and X_train/y_train as ablation
+analysis_model = LGBMClassifier(**final_model_params)
+analysis_pipeline = ImbPipeline(
+    steps=core_preprocessing_pipeline.steps + [("classifier", analysis_model)]
+)
 
-- LightGBM typically achieves excellent scores on benchmark datasets and has been demonstrated to outperform tree-based models like Random Forest
+oof_probs = cross_val_predict(
+    analysis_pipeline, X_train, y_train,
+    cv=kfold, method="predict_proba", n_jobs=-1
+)[:, 1]
 
-- This implementation uses scale_pos_weight for cost-sensitive learning to handle the class imbalance naturally without synthetic data generation
+oof_preds = (oof_probs >= 0.5).astype(int)
 
-#### Retrain Champion (LightGBM Classifier) Model using best ablation parameters
-"""
+
+# Confusion matrix
+oof_cm = confusion_matrix(y_train, oof_preds)
+tn, fp, fn, tp = oof_cm.ravel()
+
+fig, ax = plt.subplots(figsize=(6, 5))
+sns.heatmap(oof_cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=["Predicted Paid", "Predicted Default"],
+            yticklabels=["Actual Paid", "Actual Default"], ax=ax)
+ax.set_title("OOF Confusion Matrix (Training Folds)")
+plt.tight_layout()
+plt.show()
+
+print(f"\nTN={tn:,}  FP={fp:,}  FN={fn:,}  TP={tp:,}")
+print(f"Type I  (FP): {fp:,} good loans incorrectly flagged as default")
+print(f"Type II (FN): {fn:,} actual defaults the model missed")
+
+
+# Classification report
+print("\n=== OOF Classification Report ===")
+print(classification_report(y_train, oof_preds, target_names=["Fully Paid (0)", "Default (1)"]))
+
+
+# Error profiling - compare key numeric features across FP, FN, and correct predictions
+fp_mask = (y_train == 0) & (oof_preds == 1)
+fn_mask = (y_train == 1) & (oof_preds == 0)
+
+fp_cases = X_train[fp_mask]
+fn_cases = X_train[fn_mask]
+correct_cases = X_train[~fp_mask & ~fn_mask]
+
+profile_cols = [c for c in ["loan_amnt", "annual_inc", "dti", "int_rate", "revol_util", "credit_hist_months"] if c in X_train.columns]
+
+error_profile_df = pd.DataFrame({
+    "Feature": profile_cols,
+    "FP Mean": [round(fp_cases[c].mean(), 2) for c in profile_cols],
+    "FN Mean": [round(fn_cases[c].mean(), 2) for c in profile_cols],
+    "Correct Mean": [round(correct_cases[c].mean(), 2) for c in profile_cols]
+})
+
+print("\n=== Feature Profile: FP vs FN vs Correct ===")
+print(error_profile_df.to_string(index=False))
+
+
+# Feature importance - fit on full training data
+fi_model = LGBMClassifier(**final_model_params)
+fi_pipeline = ImbPipeline(
+    steps=core_preprocessing_pipeline.steps + [("classifier", fi_model)]
+)
+fi_pipeline.fit(X_train, y_train)
+
+ohe_feature_names = (
+    fi_pipeline.named_steps["scaling_encoding"]
+    .named_transformers_["cat_encoder"]
+    .get_feature_names_out(cat_cols)
+    .tolist()
+)
+
+importance_df = pd.DataFrame({
+    "Feature": num_cols + ohe_feature_names,
+    "Importance": fi_model.feature_importances_
+}).sort_values(by="Importance", ascending=False).reset_index(drop=True)
+
+print("\n=== Top 10 Feature Importances ===")
+print(importance_df.head(10).to_string(index=False))
+
+fig, ax = plt.subplots(figsize=(10, 7))
+sns.barplot(data=importance_df.head(10), x="Importance", y="Feature",
+            hue="Feature", palette="Blues_r", legend=False, ax=ax)
+ax.set_title("Top 10 Feature Importances (Champion LightGBM)")
+plt.tight_layout()
+plt.show()
+
+
+# Calibration check
+fig, ax = plt.subplots(figsize=(7, 6))
+CalibrationDisplay.from_predictions(y_train, oof_probs, n_bins=10, ax=ax, name="LightGBM (OOF)")
+ax.set_title("Probability Calibration Curve (OOF)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+
+
+"""#### Retrain Champion (LightGBM Classifier) Model using best ablation parameters"""
 
 lgbm_final_params = final_model_params.copy()
 lgbm_final_params["n_jobs"] = -1
@@ -642,3 +712,4 @@ print(fp_cases)
 
 print("\n=== False Negative Cases (model predicts paid but actually defaulted) ===")
 print(fn_cases)
+
