@@ -2,7 +2,10 @@
 
 ## 📋 Project Overview
 
-**Course:** INF2008 - Machine Learning (Stage 2)  
+**Course:** INF2008 - Machine Learning (Stage 2)
+
+**Dataset**: https://www.kaggle.com/datasets/ranadeep/credit-risk-dataset/data
+
 **Objective:** Advanced loan default prediction using CRISP-DM methodology, focusing on pipeline engineering, controlled experimentation, and business decision-making.
 
 **Business Problem:** Predict loan defaults to minimize financial losses by identifying high-risk borrowers while avoiding unnecessary rejection of creditworthy applicants.
